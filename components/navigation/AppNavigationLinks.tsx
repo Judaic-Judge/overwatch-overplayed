@@ -16,6 +16,7 @@ export default function AppNavigationLinks() {
 
   const isDashboard = pathname === "/dashboard";
   const isSessions = pathname.startsWith("/sessions");
+  const isHelp = pathname.startsWith("/help");
   const isPlanner = pathname.startsWith("/planner");
   const isLive = pathname.startsWith("/live");
 
@@ -27,6 +28,10 @@ export default function AppNavigationLinks() {
 
       <Link href="/sessions" className={navClass(isSessions)}>
         Sessions & Reviews
+      </Link>
+
+      <Link href="/help" className={navClass(isHelp)}>
+        Help / FAQ
       </Link>
 
       <span

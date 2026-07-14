@@ -22,6 +22,13 @@ function NavigationLinksFallback() {
         Sessions & Reviews
       </a>
 
+      <a
+        href="/help"
+        className="rounded-lg border border-zinc-800 px-3 py-1.5 text-sm font-semibold text-zinc-300 hover:bg-zinc-900 hover:text-zinc-100"
+      >
+        Help / FAQ
+      </a>
+
       <span className="rounded-lg border border-zinc-800 px-3 py-1.5 text-sm font-semibold text-zinc-500">
         Planner
       </span>
