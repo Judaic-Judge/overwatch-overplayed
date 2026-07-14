@@ -3,6 +3,7 @@ import { Suspense } from "react";
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/utils/supabase/server";
+import DashboardGuidance from "@/components/dashboard/DashboardGuidance";
 
 type AppRole = "coach" | "assistant_coach" | "player";
 
@@ -251,7 +252,9 @@ async function createScheduledSession(formData: FormData) {
   }
 
   if (selectedPlan.archived_at) {
-    throw new Error("Archived plans cannot be scheduled. Restore or duplicate the plan first.");
+    throw new Error(
+      "Archived plans cannot be scheduled. Restore or duplicate the plan first.",
+    );
   }
 
   const date = new Date(scheduledStart);
@@ -736,6 +739,58 @@ async function DashboardContent() {
     return rosterByTeamId.get(teamId) || [];
   }
 
+  const coachGuidanceTeams = coachTeams.map((team) => {
+    const membership = getMyMembershipForTeam(team.id);
+    const roster = getRosterForTeam(team.id);
+    const invite = getInviteForTeam(team.id);
+
+    const teamActivePlans = activeEditablePlans.filter(
+      (plan) => plan.team_id === team.id,
+    );
+
+    const teamCoachSessions = coachSessions.filter(
+      (session) => session.team_id === team.id && session.status !== "ended",
+    );
+
+    const teamLiveSessions = teamCoachSessions.filter(
+      (session) =>
+        session.status === "live" || Boolean(getLiveRoomCode(session.id)),
+    );
+
+    return {
+      id: team.id,
+      name: team.name,
+      roleLabel: membership ? formatRole(membership.role) : "Coach",
+      rosterCount: roster.length,
+      activePlanCount: teamActivePlans.length,
+      scheduledSessionCount: teamCoachSessions.length,
+      liveSessionCount: teamLiveSessions.length,
+      hasInvite: Boolean(invite),
+    };
+  });
+
+  const playerGuidanceTeams = playerTeams.map((team) => {
+    const teamPlayerSessions = playerSessions.filter(
+      (session) => session.team_id === team.id,
+    );
+
+    const teamLivePlayerSessions = teamPlayerSessions.filter(
+      (session) =>
+        session.status === "live" || Boolean(getLiveRoomCode(session.id)),
+    );
+
+    const teamUpcomingPlayerSessions = teamPlayerSessions.filter(
+      (session) => session.status !== "ended",
+    );
+
+    return {
+      id: team.id,
+      name: team.name,
+      liveSessionCount: teamLivePlayerSessions.length,
+      upcomingSessionCount: teamUpcomingPlayerSessions.length,
+    };
+  });
+
   return (
     <main className="min-h-screen bg-zinc-950 px-6 py-8 text-zinc-100">
       <div className="mx-auto max-w-6xl space-y-8">
@@ -786,6 +841,15 @@ async function DashboardContent() {
             </button>
           </form>
         </section>
+
+        <DashboardGuidance
+          hasAnyTeams={myTeams.length > 0}
+          coachTeams={coachGuidanceTeams}
+          playerTeams={playerGuidanceTeams}
+          activeEditablePlanCount={activeEditablePlans.length}
+          livePlayerSessionCount={livePlayerSessions.length}
+          upcomingPlayerSessionCount={upcomingPlayerSessions.length}
+        />
 
         <section className="grid gap-4 lg:grid-cols-3">
           <div className="rounded-xl border border-cyan-900 bg-cyan-950 p-5">
@@ -842,7 +906,10 @@ async function DashboardContent() {
             )}
           </div>
 
-          <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-5">
+          <section
+            id="create-team"
+            className="rounded-xl border border-zinc-800 bg-zinc-900 p-5"
+          >
             <h2 className="text-lg font-semibold">Create a New Team</h2>
             <p className="mt-2 text-sm text-zinc-400">
               Creating a team makes you the Coach/owner of that new team. It does not change your role on other teams.
@@ -868,11 +935,14 @@ async function DashboardContent() {
                 Create Coaching Team
               </button>
             </form>
-          </div>
+          </section>
         </section>
 
         {playerTeams.length > 0 ? (
-          <section className="space-y-6 rounded-xl border border-green-900 bg-zinc-900 p-5">
+          <section
+            id="player-sessions"
+            className="space-y-6 rounded-xl border border-green-900 bg-zinc-900 p-5"
+          >
             <div>
               <p className="text-sm text-green-400">Player Workspace</p>
               <h2 className="text-xl font-semibold">Sessions for Teams Where I Am a Player</h2>
@@ -992,7 +1062,10 @@ async function DashboardContent() {
             </div>
 
             <section className="grid gap-6 lg:grid-cols-2">
-              <div className="rounded-xl border border-zinc-800 bg-zinc-950 p-5">
+              <div
+                id="create-plan"
+                className="rounded-xl border border-zinc-800 bg-zinc-950 p-5"
+              >
                 <h3 className="mb-4 text-lg font-semibold">Create Plan</h3>
 
                 <form action={createStarterPlan} className="space-y-3">
@@ -1061,7 +1134,10 @@ async function DashboardContent() {
                 </form>
               </div>
 
-              <div className="rounded-xl border border-zinc-800 bg-zinc-950 p-5">
+              <div
+                id="schedule-session"
+                className="rounded-xl border border-zinc-800 bg-zinc-950 p-5"
+              >
                 <h3 className="mb-4 text-lg font-semibold">Schedule Session</h3>
 
                 {activeEditablePlans.length > 0 ? (
@@ -1353,7 +1429,10 @@ async function DashboardContent() {
               </div>
             </section>
 
-            <section className="rounded-xl border border-zinc-800 bg-zinc-950 p-5">
+            <section
+              id="player-invites"
+              className="rounded-xl border border-zinc-800 bg-zinc-950 p-5"
+            >
               <h3 className="mb-4 text-lg font-semibold">Player Invite Links</h3>
 
               <div className="grid gap-3">
