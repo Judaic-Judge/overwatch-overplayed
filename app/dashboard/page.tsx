@@ -10,6 +10,8 @@ type AppRole = "coach" | "assistant_coach" | "player";
 type Team = {
   id: string;
   name: string;
+  owner_id: string;
+  archived_at: string | null;
   created_at: string;
 };
 
@@ -148,6 +150,84 @@ async function createTeam(formData: FormData) {
   revalidatePath("/dashboard");
 }
 
+async function archiveTeam(formData: FormData) {
+  "use server";
+
+  const supabase = await createClient();
+
+  const {
+    data: { user },
+    error: userError,
+  } = await supabase.auth.getUser();
+
+  if (userError || !user) {
+    redirect("/sign-in");
+  }
+
+  const teamId = String(formData.get("teamId") || "").trim();
+
+  if (!teamId) {
+    return;
+  }
+
+  const { data: liveTeamSession, error: liveTeamSessionError } = await supabase
+    .from("scheduled_sessions")
+    .select("id")
+    .eq("team_id", teamId)
+    .eq("status", "live")
+    .limit(1)
+    .maybeSingle();
+
+  if (liveTeamSessionError) {
+    throw new Error(liveTeamSessionError.message);
+  }
+
+  if (liveTeamSession) {
+    throw new Error("End the live session before archiving this team.");
+  }
+
+  const { error } = await supabase.rpc("archive_team", {
+    team_id_input: teamId,
+  });
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  revalidatePath("/dashboard");
+}
+
+async function restoreTeam(formData: FormData) {
+  "use server";
+
+  const supabase = await createClient();
+
+  const {
+    data: { user },
+    error: userError,
+  } = await supabase.auth.getUser();
+
+  if (userError || !user) {
+    redirect("/sign-in");
+  }
+
+  const teamId = String(formData.get("teamId") || "").trim();
+
+  if (!teamId) {
+    return;
+  }
+
+  const { error } = await supabase.rpc("restore_team", {
+    team_id_input: teamId,
+  });
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  revalidatePath("/dashboard");
+}
+
 async function createStarterPlan(formData: FormData) {
   "use server";
 
@@ -239,6 +319,20 @@ async function createScheduledSession(formData: FormData) {
 
   if (membership.role !== "coach" && membership.role !== "assistant_coach") {
     throw new Error("Only Coaches can schedule sessions.");
+  }
+
+  const { data: selectedTeam, error: selectedTeamError } = await supabase
+    .from("teams")
+    .select("id, archived_at")
+    .eq("id", teamId)
+    .single();
+
+  if (selectedTeamError || !selectedTeam) {
+    throw new Error("Team not found.");
+  }
+
+  if (selectedTeam.archived_at) {
+    throw new Error("Archived teams cannot be scheduled. Restore the team first.");
   }
 
   const { data: selectedPlan, error: selectedPlanError } = await supabase
@@ -577,7 +671,7 @@ async function DashboardContent() {
 
   const { data: teams, error: teamsError } = await supabase
     .from("teams")
-    .select("id, name, created_at")
+    .select("id, name, owner_id, archived_at, created_at")
     .order("created_at", { ascending: false });
 
   const { data: teamMembers, error: teamMembersError } = await supabase
@@ -636,16 +730,26 @@ async function DashboardContent() {
   const coachTeamIds = new Set(coachMemberships.map((member) => member.team_id));
   const playerTeamIds = new Set(playerMemberships.map((member) => member.team_id));
 
-  const myTeams = safeTeams.filter((team) => myTeamIds.has(team.id));
-  const coachTeams = safeTeams.filter((team) => coachTeamIds.has(team.id));
-  const playerTeams = safeTeams.filter((team) => playerTeamIds.has(team.id));
+  const activeTeams = safeTeams.filter((team) => !team.archived_at);
+  const archivedTeams = safeTeams.filter((team) => team.archived_at);
+  const archivedTeamIds = new Set(archivedTeams.map((team) => team.id));
 
-  const playerSessions = safeSessions.filter((session) =>
-    playerTeamIds.has(session.team_id),
+  const myTeams = activeTeams.filter((team) => myTeamIds.has(team.id));
+  const coachTeams = activeTeams.filter((team) => coachTeamIds.has(team.id));
+  const playerTeams = activeTeams.filter((team) => playerTeamIds.has(team.id));
+
+  const archivedMyTeams = archivedTeams.filter((team) => myTeamIds.has(team.id));
+
+  const playerSessions = safeSessions.filter(
+    (session) =>
+      playerTeamIds.has(session.team_id) &&
+      !archivedTeamIds.has(session.team_id),
   );
 
-  const coachSessions = safeSessions.filter((session) =>
-    coachTeamIds.has(session.team_id),
+  const coachSessions = safeSessions.filter(
+    (session) =>
+      coachTeamIds.has(session.team_id) &&
+      !archivedTeamIds.has(session.team_id),
   );
 
   const livePlayerSessions = playerSessions.filter((session) =>
@@ -666,8 +770,16 @@ async function DashboardContent() {
     (plan) => plan.team_id === null || coachTeamIds.has(plan.team_id),
   );
 
-  const activeEditablePlans = editablePlans.filter((plan) => !plan.archived_at);
-  const archivedEditablePlans = editablePlans.filter((plan) => plan.archived_at);
+  const activeEditablePlans = editablePlans.filter(
+    (plan) =>
+      !plan.archived_at &&
+      (plan.team_id === null || !archivedTeamIds.has(plan.team_id)),
+  );
+  const archivedEditablePlans = editablePlans.filter(
+    (plan) =>
+      Boolean(plan.archived_at) ||
+      (plan.team_id !== null && archivedTeamIds.has(plan.team_id)),
+  );
 
   const sharedPlayerPlans = safePlans.filter(
     (plan) =>
@@ -677,10 +789,15 @@ async function DashboardContent() {
   );
 
   const activeSharedPlayerPlans = sharedPlayerPlans.filter(
-    (plan) => !plan.archived_at,
+    (plan) =>
+      !plan.archived_at &&
+      plan.team_id !== null &&
+      !archivedTeamIds.has(plan.team_id),
   );
   const archivedSharedPlayerPlans = sharedPlayerPlans.filter(
-    (plan) => plan.archived_at,
+    (plan) =>
+      Boolean(plan.archived_at) ||
+      (plan.team_id !== null && archivedTeamIds.has(plan.team_id)),
   );
 
   const rosterResults = await Promise.all(
@@ -719,6 +836,11 @@ async function DashboardContent() {
 
   function getTeamName(teamId: string) {
     return safeTeams.find((team) => team.id === teamId)?.name || "Unknown Team";
+  }
+
+  function isArchivedTeam(teamId: string | null) {
+    if (!teamId) return false;
+    return archivedTeamIds.has(teamId);
   }
 
   function getPlanTitle(planId: string) {
@@ -1522,35 +1644,116 @@ async function DashboardContent() {
         ) : null}
 
         <section className="rounded-xl border border-zinc-800 bg-zinc-900 p-5">
-          <h2 className="mb-4 text-xl font-semibold">My Teams</h2>
+          <h2 className="mb-4 text-xl font-semibold">Active Teams</h2>
 
           {myTeams.length > 0 ? (
             <div className="grid gap-3 md:grid-cols-2">
               {myTeams.map((team) => {
                 const membership = getMyMembershipForTeam(team.id);
+                const isOwner = team.owner_id === user.id;
 
                 return (
                   <div
                     key={team.id}
                     className="rounded-lg border border-zinc-800 bg-zinc-950 p-4"
                   >
-                    <h3 className="font-semibold">{team.name}</h3>
-                    <p className="text-sm text-zinc-500">
-                      Role: {membership ? formatRole(membership.role) : "Member"}
-                    </p>
-                    <p className="text-sm text-zinc-500">
-                      Created {new Date(team.created_at).toLocaleDateString()}
-                    </p>
+                    <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                      <div>
+                        <h3 className="font-semibold">{team.name}</h3>
+                        <p className="text-sm text-zinc-500">
+                          Role: {membership ? formatRole(membership.role) : "Member"}
+                          {isOwner ? " · Owner" : ""}
+                        </p>
+                        <p className="text-sm text-zinc-500">
+                          Created {new Date(team.created_at).toLocaleDateString()}
+                        </p>
+                      </div>
+
+                      {isOwner ? (
+                        <form action={archiveTeam}>
+                          <input type="hidden" name="teamId" value={team.id} />
+
+                          <button
+                            type="submit"
+                            className="rounded-lg border border-yellow-900 px-3 py-1.5 text-sm font-semibold text-yellow-300 hover:bg-yellow-950"
+                          >
+                            Archive Team
+                          </button>
+                        </form>
+                      ) : null}
+                    </div>
                   </div>
                 );
               })}
             </div>
           ) : (
             <p className="text-zinc-400">
-              No teams yet. Join with an invite link or create your first coaching team.
+              No active teams. Join with an invite link, create your first coaching team, or restore an archived team.
             </p>
           )}
         </section>
+
+        {archivedMyTeams.length > 0 ? (
+          <section className="rounded-xl border border-yellow-900 bg-zinc-900 p-5">
+            <div className="mb-4">
+              <h2 className="text-xl font-semibold text-yellow-100">
+                Archived Teams
+              </h2>
+              <p className="mt-1 text-sm text-zinc-400">
+                Archived teams are hidden from active coaching, player, invite, and scheduling sections. Sessions and history are preserved.
+              </p>
+            </div>
+
+            <div className="grid gap-3 md:grid-cols-2">
+              {archivedMyTeams.map((team) => {
+                const membership = getMyMembershipForTeam(team.id);
+                const isOwner = team.owner_id === user.id;
+
+                return (
+                  <div
+                    key={team.id}
+                    className="rounded-lg border border-yellow-900 bg-yellow-950 p-4"
+                  >
+                    <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                      <div>
+                        <h3 className="font-semibold text-yellow-100">
+                          {team.name}
+                        </h3>
+                        <p className="text-sm text-yellow-300">
+                          Role: {membership ? formatRole(membership.role) : "Member"}
+                          {isOwner ? " · Owner" : ""}
+                        </p>
+                        <p className="text-xs text-yellow-400">
+                          Archived{" "}
+                          {team.archived_at
+                            ? new Date(team.archived_at).toLocaleDateString()
+                            : ""}
+                        </p>
+                      </div>
+
+                      {isOwner ? (
+                        <form action={restoreTeam}>
+                          <input type="hidden" name="teamId" value={team.id} />
+
+                          <button
+                            type="submit"
+                            className="rounded-lg bg-yellow-500 px-3 py-1.5 text-sm font-semibold text-zinc-950 hover:bg-yellow-400"
+                          >
+                            Restore Team
+                          </button>
+                        </form>
+                      ) : (
+                        <span className="rounded-lg border border-yellow-800 px-3 py-1.5 text-sm text-yellow-300">
+                          Archived
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+        ) : null}
 
         {activeEditablePlans.length > 0 ? (
           <section className="rounded-xl border border-zinc-800 bg-zinc-900 p-5">
@@ -1572,7 +1775,11 @@ async function DashboardContent() {
                       <h3 className="font-semibold">{plan.title}</h3>
                       <p className="text-sm text-zinc-500">
                         {plan.map_id} · {plan.game_mode}
-                        {plan.team_id ? ` · ${getTeamName(plan.team_id)}` : " · Personal Draft"}
+                        {plan.team_id
+                          ? ` · ${getTeamName(plan.team_id)}${
+                              isArchivedTeam(plan.team_id) ? " · Archived Team" : ""
+                            }`
+                          : " · Personal Draft"}
                       </p>
                     </div>
 
@@ -1619,7 +1826,11 @@ async function DashboardContent() {
                       </h3>
                       <p className="text-sm text-yellow-300">
                         {plan.map_id} · {plan.game_mode}
-                        {plan.team_id ? ` · ${getTeamName(plan.team_id)}` : " · Personal Draft"}
+                        {plan.team_id
+                          ? ` · ${getTeamName(plan.team_id)}${
+                              isArchivedTeam(plan.team_id) ? " · Archived Team" : ""
+                            }`
+                          : " · Personal Draft"}
                       </p>
                       <p className="text-xs text-yellow-400">
                         Archived{" "}
@@ -1668,7 +1879,11 @@ async function DashboardContent() {
                       <h3 className="font-semibold">{plan.title}</h3>
                       <p className="text-sm text-zinc-500">
                         {plan.map_id} · {plan.game_mode}
-                        {plan.team_id ? ` · ${getTeamName(plan.team_id)}` : ""}
+                        {plan.team_id
+                          ? ` · ${getTeamName(plan.team_id)}${
+                              isArchivedTeam(plan.team_id) ? " · Archived Team" : ""
+                            }`
+                          : ""}
                       </p>
                     </div>
 
@@ -1704,7 +1919,11 @@ async function DashboardContent() {
                       <h3 className="font-semibold text-zinc-300">{plan.title}</h3>
                       <p className="text-sm text-zinc-500">
                         {plan.map_id} · {plan.game_mode}
-                        {plan.team_id ? ` · ${getTeamName(plan.team_id)}` : ""}
+                        {plan.team_id
+                          ? ` · ${getTeamName(plan.team_id)}${
+                              isArchivedTeam(plan.team_id) ? " · Archived Team" : ""
+                            }`
+                          : ""}
                       </p>
                     </div>
 
